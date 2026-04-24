@@ -4,22 +4,40 @@ sources:
   - name: itch.io
     enabled: true
     parsers:
-      - module: parsers.itch
+      - module: src.parsers.itch
         function: scrape_itch_3d
 
   - name: Sketchfab
     enabled: true
     parsers:
-      - module: parsers.sketchfab
+      - module: src.parsers.sketchfab
         function: scrape_sketchfab
+
+  - name: Matterport
+    enabled: true
+    parsers:
+      - module: src.parsers.matterport
+        function: scrape_matterport
+
+  - name: Three.js
+    enabled: true
+    parsers:
+      - module: src.parsers.threejs
+        function: scrape_threejs
+
+  - name: OpenGameArt
+    enabled: true
+    parsers:
+      - module: src.parsers.opengameart
+        function: scrape_opengameart
 
 schedule:
   interval: daily        # for GitHub Actions: runs on schedule
   time: "03:00"          # UTC
 
 scraping:
-  rate_limit_min: 1      # seconds between requests (min)
-  rate_limit_max: 3      # seconds between requests (max)
+  rate_limit_min: 2      # seconds between requests (min)
+  rate_limit_max: 5      # seconds between requests (max)
   max_pages_per_source: 10  # pagination limit per source per run
   timeout: 30            # request timeout in seconds
 

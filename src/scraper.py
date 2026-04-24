@@ -3,6 +3,7 @@
 Main orchestrator — loads config, runs parsers, stores results.
 """
 
+import importlib
 import hashlib
 import logging
 import random
@@ -13,8 +14,6 @@ from pathlib import Path
 import yaml
 
 from src.storage.database import Database
-from src.parsers.itch import scrape_itch_3d
-from src.parsers.sketchfab import scrape_sketchfab
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,6 +31,12 @@ def make_record_id(source: str, url: str) -> str:
     """Generate a stable unique hash from source + URL."""
     raw = f"{source}|{url}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+def _load_parser(module_path: str, function_name: str):
+    """Dynamically import a parser function from a module path."""
+    module = importlib.import_module(module_path)
+    return getattr(module, function_name)
 
 
 def run_scraper(config: dict):
@@ -55,26 +60,34 @@ def run_scraper(config: dict):
         name = source_cfg["name"]
         logger.info(f"Scraping source: {name}")
 
-        # Map source name to parser function
-        parser_map = {
-            "itch.io": scrape_itch_3d,
-            "Sketchfab": scrape_sketchfab,
-        }
-
-        parser = parser_map.get(name)
-        if parser is None:
-            logger.warning(f"No parser registered for source: {name}")
+        # Load parsers from config
+        parsers = source_cfg.get("parsers", [])
+        if not parsers:
+            logger.warning(f"No parsers configured for source: {name}")
             continue
 
-        try:
-            raw_records = parser(max_pages=max_pages, rate_limit=(rate_min, rate_max))
-        except Exception as e:
-            logger.error(f"Parser failed for {name}: {e}", exc_info=True)
-            continue
+        all_records = []
+        for parser_cfg in parsers:
+            module_path = parser_cfg["module"]
+            function_name = parser_cfg["function"]
+
+            try:
+                parser_fn = _load_parser(module_path, function_name)
+            except (ImportError, AttributeError) as e:
+                logger.error(f"Failed to load parser {module_path}.{function_name}: {e}")
+                continue
+
+            try:
+                raw_records = parser_fn(max_pages=max_pages, rate_limit=(rate_min, rate_max))
+                all_records.extend(raw_records)
+                logger.info(f"  Parser {function_name}: {len(raw_records)} records")
+            except Exception as e:
+                logger.error(f"Parser {function_name} failed for {name}: {e}", exc_info=True)
+                continue
 
         new_count = 0
         skip_count = 0
-        for rec in raw_records:
+        for rec in all_records:
             rec["id"] = make_record_id(rec["source"], rec["link"])
             rec["scraped_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -85,7 +98,11 @@ def run_scraper(config: dict):
 
         total_new += new_count
         total_skipped += skip_count
-        logger.info(f"  {name}: {len(raw_records)} records (new={new_count}, skipped={skip_count})")
+        logger.info(f"  {name}: {len(all_records)} total (new={new_count}, skipped={skip_count})")
+
+        # Small delay between sources
+        if new_count > 0:
+            time.sleep(random.uniform(2, 5))
 
     db.close()
     logger.info(f"Done. Total new: {total_new}, Total skipped (dupes): {total_skipped}")

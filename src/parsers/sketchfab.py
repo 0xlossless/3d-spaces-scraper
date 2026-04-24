@@ -26,7 +26,7 @@ def _get_headers() -> dict:
     }
 
 
-def _fetch(url: str, rate_limit: tuple = (3, 5), max_retries: int = 3) -> Optional[dict]:
+def _fetch(url: str, rate_limit: tuple = (5, 8), max_retries: int = 3) -> Optional[dict]:
     """Fetch a JSON page from the Sketchfab API with retry/backoff."""
     time.sleep(random.uniform(*rate_limit))
 
@@ -36,8 +36,8 @@ def _fetch(url: str, rate_limit: tuple = (3, 5), max_retries: int = 3) -> Option
 
             if resp.status_code == 429:
                 # Rate limited — wait and retry
-                retry_after = int(resp.headers.get("Retry-After", 10))
-                wait = retry_after + random.uniform(2, 5)
+                retry_after = int(resp.headers.get("Retry-After", 15))
+                wait = retry_after + random.uniform(5, 10)
                 logger.warning(f"Rate limited (429), waiting {wait:.1f}s...")
                 time.sleep(wait)
                 continue
@@ -48,15 +48,9 @@ def _fetch(url: str, rate_limit: tuple = (3, 5), max_retries: int = 3) -> Option
         except requests.RequestException as e:
             logger.error(f"Request attempt {attempt + 1} failed for {url}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt + random.uniform(1, 3))
 
     return None
-
-
-def _enrich_model(uid: str, rate_limit: tuple = (0.5, 1)) -> Optional[dict]:
-    """Fetch detailed model info from the API."""
-    url = f"https://api.sketchfab.com/v3/models/{uid}"
-    return _fetch(url, rate_limit, max_retries=2)
 
 
 def _parse_model(model: dict) -> Optional[dict]:
@@ -67,8 +61,23 @@ def _parse_model(model: dict) -> Optional[dict]:
         if not uid or not name:
             return None
 
-        tags = model.get("tags", [])
-        categories = model.get("categories", [])
+        tags_raw = model.get("tags", [])
+        # Tags can be strings or objects with 'name' key
+        tags = []
+        for t in tags_raw:
+            if isinstance(t, dict):
+                tags.append(t.get("name", ""))
+            elif isinstance(t, str):
+                tags.append(t)
+        tags = [t for t in tags if t][:10]
+
+        categories_raw = model.get("categories", [])
+        categories = []
+        for c in categories_raw:
+            if isinstance(c, dict):
+                categories.append(c.get("name", ""))
+            elif isinstance(c, str):
+                categories.append(c)
 
         # Thumbnail — pick best quality
         thumbnails = model.get("thumbnails", {}).get("images", [])
@@ -78,7 +87,7 @@ def _parse_model(model: dict) -> Optional[dict]:
             thumbnail_url = best.get("url", "")
 
         user = model.get("user", {})
-        author = user.get("username", "")
+        author = user.get("displayName") or user.get("username", "")
 
         viewer_url = model.get("viewerUrl", "")
         if not viewer_url:
@@ -88,17 +97,36 @@ def _parse_model(model: dict) -> Optional[dict]:
         if description:
             description = description[:500]
 
-        engine = model.get("engine", "") or ""
+        # Get file size from archives if available
+        file_size = ""
+        archives = model.get("archives", {})
+        if archives:
+            glb = archives.get("glb", {})
+            if glb and glb.get("size"):
+                size_bytes = glb["size"]
+                if size_bytes > 1_073_741_824:
+                    file_size = f"{size_bytes / 1_073_741_824:.1f} GB"
+                elif size_bytes > 1_048_576:
+                    file_size = f"{size_bytes / 1_048_576:.1f} MB"
+                else:
+                    file_size = f"{size_bytes / 1024:.1f} KB"
+
+        view_count = model.get("viewCount", 0)
+        license_info = model.get("license", {})
+        if isinstance(license_info, dict):
+            license_label = license_info.get("label", "")
+        else:
+            license_label = ""
 
         return {
             "source": "sketchfab",
             "title": name,
             "description": description,
-            "tags": tags[:10],
+            "tags": tags,
             "genre": categories[0] if categories else "",
-            "engine": engine,
+            "engine": "",
             "platform": "browser",
-            "file_size": "",
+            "file_size": file_size,
             "link": viewer_url,
             "thumbnail_url": thumbnail_url,
             "author": author,
@@ -110,15 +138,16 @@ def _parse_model(model: dict) -> Optional[dict]:
         return None
 
 
-def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (2, 4)) -> list[dict]:
+def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8)) -> list[dict]:
     """
     Scrape Sketchfab's public 3D models via REST API.
 
-    Uses cursor-based pagination with aggressive rate limiting.
+    Uses cursor-based pagination with conservative rate limiting.
+    No enrichment calls — the list endpoint already returns rich metadata.
 
     Args:
         max_pages: Maximum number of pages to scrape.
-        rate_limit: (min_seconds, max_seconds) between list requests.
+        rate_limit: (min_seconds, max_seconds) between requests.
 
     Returns:
         List of record dicts matching the data schema.
@@ -126,24 +155,20 @@ def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (2, 4)) -> list[di
     all_records = []
     page = 1
 
+    # Build initial URL with query params
     url = SKETCHFAB_API
     params = {
         "sort": "views",
         "license": "CC Attribution",
         "per_page": 20,
     }
+    query_parts = "&".join(f"{k}={v}" for k, v in params.items())
+    current_url = f"{url}?{query_parts}"
 
     while page <= max_pages:
         logger.info(f"Fetching Sketchfab page {page}")
 
-        if page == 1:
-            full_url = url
-            for k, v in params.items():
-                full_url += f"&{k}={v}" if "?" in full_url else f"?{k}={v}"
-        else:
-            full_url = url
-
-        data = _fetch(full_url, rate_limit, max_retries=3)
+        data = _fetch(current_url, rate_limit, max_retries=3)
         if not data:
             logger.warning("Failed to fetch page — stopping pagination")
             break
@@ -154,34 +179,21 @@ def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (2, 4)) -> list[di
             break
 
         page_records = []
-        for i, model in enumerate(results):
-            uid = model.get("uid", "")
-            if not uid:
-                continue
-
-            # Enrich every 3rd model for richer metadata
-            if i % 3 == 0:
-                detail = _enrich_model(uid, rate_limit=(0.5, 1))
-                if detail:
-                    merged = {**model, **detail}
-                else:
-                    merged = model
-            else:
-                merged = model
-
-            rec = _parse_model(merged)
+        for model in results:
+            rec = _parse_model(model)
             if rec:
                 page_records.append(rec)
 
         logger.info(f"  Page {page}: extracted {len(page_records)} records")
         all_records.extend(page_records)
 
+        # Use the 'next' URL for cursor-based pagination
         next_url = data.get("next")
         if not next_url:
             logger.info("No next page — pagination complete")
             break
 
-        url = next_url
+        current_url = next_url
         page += 1
 
     logger.info(f"Sketchfab: total {len(all_records)} records scraped")
