@@ -1,0 +1,26 @@
+# Scraper Configuration
+
+sources:
+  - name: itch.io
+    enabled: true
+    parsers:
+      - module: parsers.itch
+        function: scrape_itch_3d
+
+schedule:
+  interval: daily        # for GitHub Actions: runs on schedule
+  time: "03:00"          # UTC
+
+scraping:
+  rate_limit_min: 1      # seconds between requests (min)
+  rate_limit_max: 3      # seconds between requests (max)
+  max_pages_per_source: 10  # pagination limit per source per run
+  timeout: 30            # request timeout in seconds
+
+storage:
+  database: data/3d_spaces.db
+
+user_agents:
+  - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  - "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
