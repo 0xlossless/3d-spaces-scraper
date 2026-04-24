@@ -14,6 +14,7 @@ import yaml
 
 from src.storage.database import Database
 from src.parsers.itch import scrape_itch_3d
+from src.parsers.sketchfab import scrape_sketchfab
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,6 +58,7 @@ def run_scraper(config: dict):
         # Map source name to parser function
         parser_map = {
             "itch.io": scrape_itch_3d,
+            "Sketchfab": scrape_sketchfab,
         }
 
         parser = parser_map.get(name)

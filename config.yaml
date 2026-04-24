@@ -7,6 +7,12 @@ sources:
       - module: parsers.itch
         function: scrape_itch_3d
 
+  - name: Sketchfab
+    enabled: true
+    parsers:
+      - module: parsers.sketchfab
+        function: scrape_sketchfab
+
 schedule:
   interval: daily        # for GitHub Actions: runs on schedule
   time: "03:00"          # UTC
