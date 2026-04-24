@@ -125,19 +125,24 @@ def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
         return None
 
 
-def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3)) -> list[dict]:
+def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3),
+                   incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
     Scrape itch.io's 3D tag page, paginating through results.
 
     Args:
         max_pages: Maximum number of pages to scrape.
         rate_limit: (min_seconds, max_seconds) between requests.
+        incremental: If True, skip pages already scraped (best-effort).
+        enrich: If True, fetch individual game pages for deeper metadata.
+        enrich_interval: Enrich every Nth game (default: 5).
 
     Returns:
         List of record dicts matching the data schema.
     """
     all_records = []
     page = 1
+    enrich_count = 0
 
     while page <= max_pages:
         url = f"{ITCH_3D_URL}?page={page}"
@@ -155,9 +160,16 @@ def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3)) -> list[dict
             break
 
         page_records = []
-        for cell in cells:
+        for i, cell in enumerate(cells):
             rec = _parse_game_cell(cell)
             if rec:
+                # Enrich every Nth record if enabled
+                if enrich and i % enrich_interval == 0:
+                    enriched = _enrich_itch_game(rec)
+                    if enriched:
+                        rec.update(enriched)
+                    enrich_count += 1
+
                 page_records.append(rec)
 
         logger.info(f"  Page {page}: extracted {len(page_records)} records")
@@ -171,8 +183,53 @@ def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3)) -> list[dict
 
         page += 1
 
-    logger.info(f"itch.io: total {len(all_records)} records scraped")
+    logger.info(f"itch.io: total {len(all_records)} records scraped (enriched: {enrich_count})")
     return all_records
+
+
+def _enrich_itch_game(record: dict) -> Optional[dict]:
+    """Fetch individual game page for deeper metadata."""
+    link = record.get("link", "")
+    if not link:
+        return None
+
+    try:
+        time.sleep(random.uniform(1, 2))
+        resp = requests.get(link, headers=_get_headers(), timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+
+        enrichment = {}
+
+        # Extract tags from page
+        tag_elements = soup.select(".tag a, .tag-list a")
+        tags = [t.get_text(strip=True) for t in tag_elements if t.get_text(strip=True)]
+        if tags:
+            enrichment["tags"] = list(set(record.get("tags", []) + tags))[:10]
+
+        # Extract engine info from description or page content
+        desc = soup.select_one(".description, .game_description")
+        if desc:
+            desc_text = desc.get_text(strip=True)
+            record["description"] = desc_text[:500]
+
+            # Detect engine from description
+            engines = ["Unity", "Unreal Engine", "Godot", "GameMaker", "Three.js", "Babylon.js"]
+            for engine in engines:
+                if engine.lower() in desc_text.lower():
+                    enrichment["engine"] = engine
+                    break
+
+        # Extract developer info
+        dev_el = soup.select_one(".developer a, .creator a")
+        if dev_el:
+            enrichment["author"] = dev_el.get_text(strip=True)
+
+        return enrichment if enrichment else None
+
+    except Exception as e:
+        logger.debug(f"Failed to enrich {link}: {e}")
+        return None
 
 
 if __name__ == "__main__":

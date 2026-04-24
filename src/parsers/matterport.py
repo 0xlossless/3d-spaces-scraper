@@ -152,7 +152,8 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
         return None
 
 
-def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5)) -> list[dict]:
+def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
+                      incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
     Scrape Matterport gallery public 3D spaces.
 

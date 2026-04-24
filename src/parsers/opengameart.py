@@ -133,7 +133,8 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
     return records
 
 
-def scrape_opengameart(max_pages: int = 10, rate_limit: tuple = (2, 4)) -> list[dict]:
+def scrape_opengameart(max_pages: int = 10, rate_limit: tuple = (2, 4),
+                       incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
     Scrape OpenGameArt.org for 3D models.
 

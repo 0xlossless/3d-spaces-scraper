@@ -43,7 +43,8 @@ def _fetch_json(url: str, rate_limit: tuple = (1, 2)) -> Optional[dict]:
         return None
 
 
-def scrape_threejs(max_pages: int = 1, rate_limit: tuple = (1, 2)) -> list[dict]:
+def scrape_threejs(max_pages: int = 1, rate_limit: tuple = (1, 2),
+                   incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
     Scrape Three.js examples via JSON API.
 

@@ -138,7 +138,8 @@ def _parse_model(model: dict) -> Optional[dict]:
         return None
 
 
-def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8)) -> list[dict]:
+def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8),
+                     incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
     Scrape Sketchfab's public 3D models via REST API.
 
@@ -147,7 +148,10 @@ def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8)) -> list[di
 
     Args:
         max_pages: Maximum number of pages to scrape.
-        rate_limit: (min_seconds, max_seconds) between requests.
+        rate_limit: (min_seconds, max_seconds) between list requests.
+        incremental: If True, skip pages already scraped (best-effort).
+        enrich: If True, fetch individual model pages for deeper metadata.
+        enrich_interval: Enrich every Nth model (default: 5).
 
     Returns:
         List of record dicts matching the data schema.

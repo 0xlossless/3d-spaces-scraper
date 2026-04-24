@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS records (
 
 CREATE INDEX IF NOT EXISTS idx_source ON records(source);
 CREATE INDEX IF NOT EXISTS idx_scraped_at ON records(scraped_at);
+
+-- Track last scrape time per source for incremental scraping
+CREATE TABLE IF NOT EXISTS scrape_meta (
+    source        TEXT PRIMARY KEY,
+    last_scraped  TEXT,
+    total_records INTEGER DEFAULT 0
+);
 """
 
 
@@ -95,6 +102,29 @@ class Database:
         except sqlite3.IntegrityError as e:
             logger.debug(f"Duplicate record skipped: {e}")
             return False
+
+    def update_scrape_meta(self, source: str, count: int):
+        """Update scrape metadata for a source."""
+        from datetime import datetime, timezone
+
+        self.conn.execute(
+            """
+            INSERT INTO scrape_meta (source, last_scraped, total_records)
+            VALUES (?, ?, ?)
+            ON CONFLICT(source) DO UPDATE SET
+                last_scraped = excluded.last_scraped,
+                total_records = excluded.total_records
+            """,
+            (source, datetime.now(timezone.utc).isoformat(), count),
+        )
+        self.conn.commit()
+
+    def get_last_scraped(self, source: str) -> Optional[str]:
+        """Get last scrape time for a source."""
+        row = self.conn.execute(
+            "SELECT last_scraped FROM scrape_meta WHERE source = ?", (source,)
+        ).fetchone()
+        return row["last_scraped"] if row else None
 
     def count(self) -> int:
         """Total records in database."""

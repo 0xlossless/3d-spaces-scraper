@@ -3,30 +3,61 @@
 sources:
   - name: itch.io
     enabled: true
+    rate_limit:
+      min: 1
+      max: 3
+    max_pages: 10
+    enrich:
+      enabled: true
+      interval: 5  # enrich every 5th game
     parsers:
       - module: src.parsers.itch
         function: scrape_itch_3d
 
   - name: Sketchfab
     enabled: true
+    rate_limit:
+      min: 5
+      max: 8
+    max_pages: 10
+    enrich:
+      enabled: false  # API already returns rich metadata
     parsers:
       - module: src.parsers.sketchfab
         function: scrape_sketchfab
 
   - name: Matterport
     enabled: true
+    rate_limit:
+      min: 3
+      max: 5
+    max_pages: 1
+    enrich:
+      enabled: false  # JS-rendered, expensive to enrich
     parsers:
       - module: src.parsers.matterport
         function: scrape_matterport
 
   - name: Three.js
     enabled: true
+    rate_limit:
+      min: 1
+      max: 2
+    max_pages: 1
+    enrich:
+      enabled: false  # JSON API already complete
     parsers:
       - module: src.parsers.threejs
         function: scrape_threejs
 
   - name: OpenGameArt
     enabled: true
+    rate_limit:
+      min: 2
+      max: 4
+    max_pages: 10
+    enrich:
+      enabled: false  # Would need individual page fetches
     parsers:
       - module: src.parsers.opengameart
         function: scrape_opengameart
@@ -36,10 +67,11 @@ schedule:
   time: "03:00"          # UTC
 
 scraping:
-  rate_limit_min: 2      # seconds between requests (min)
-  rate_limit_max: 5      # seconds between requests (max)
-  max_pages_per_source: 10  # pagination limit per source per run
+  rate_limit_min: 2      # seconds between requests (min, global default)
+  rate_limit_max: 5      # seconds between requests (max, global default)
+  max_pages_per_source: 10  # pagination limit per source per run (global default)
   timeout: 30            # request timeout in seconds
+  cache_ttl: 3600        # HTTP cache expiry in seconds (1 hour)
 
 storage:
   database: data/3d_spaces.db

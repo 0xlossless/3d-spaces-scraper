@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from src.http_cache import init_cache, get_cache_stats
 from src.storage.database import Database
 
 logging.basicConfig(
@@ -39,18 +40,34 @@ def _load_parser(module_path: str, function_name: str):
     return getattr(module, function_name)
 
 
-def run_scraper(config: dict):
+def run_scraper(config: dict, incremental: bool = False) -> dict:
+    """
+    Run the scraper pipeline.
+
+    Args:
+        config: Configuration dict from config.yaml.
+        incremental: If True, only fetch pages with new content since last run.
+
+    Returns:
+        Summary dict with counts.
+    """
+    # Initialize HTTP cache
+    cache_ttl = config.get("scraping", {}).get("cache_ttl", 3600)
+    init_cache(expire_after=cache_ttl)
+    cache_stats = get_cache_stats()
+    logger.info(f"HTTP cache: {cache_stats}")
+
     storage_cfg = config["storage"]
     db = Database(storage_cfg["database"])
 
     scrape_cfg = config["scraping"]
-    rate_min = scrape_cfg["rate_limit_min"]
-    rate_max = scrape_cfg["rate_limit_max"]
     max_pages = scrape_cfg["max_pages_per_source"]
 
     sources = config["sources"]
     total_new = 0
     total_skipped = 0
+    total_cached = 0
+    source_summaries = []
 
     for source_cfg in sources:
         if not source_cfg.get("enabled", True):
@@ -58,9 +75,21 @@ def run_scraper(config: dict):
             continue
 
         name = source_cfg["name"]
+        logger.info(f"\n{'='*60}")
         logger.info(f"Scraping source: {name}")
+        logger.info(f"{'='*60}")
 
-        # Load parsers from config
+        # Per-source rate limits (override global if set)
+        source_rate = source_cfg.get("rate_limit", {})
+        rate_min = source_rate.get("min", scrape_cfg["rate_limit_min"])
+        rate_max = source_rate.get("max", scrape_cfg["rate_limit_max"])
+        source_max_pages = source_cfg.get("max_pages", max_pages)
+
+        # Enrichment settings
+        enrich = source_cfg.get("enrich", {})
+        enrich_enabled = enrich.get("enabled", False)
+        enrich_interval = enrich.get("interval", 5)  # enrich every Nth item
+
         parsers = source_cfg.get("parsers", [])
         if not parsers:
             logger.warning(f"No parsers configured for source: {name}")
@@ -78,7 +107,13 @@ def run_scraper(config: dict):
                 continue
 
             try:
-                raw_records = parser_fn(max_pages=max_pages, rate_limit=(rate_min, rate_max))
+                raw_records = parser_fn(
+                    max_pages=source_max_pages,
+                    rate_limit=(rate_min, rate_max),
+                    incremental=incremental,
+                    enrich=enrich_enabled,
+                    enrich_interval=enrich_interval,
+                )
                 all_records.extend(raw_records)
                 logger.info(f"  Parser {function_name}: {len(raw_records)} records")
             except Exception as e:
@@ -98,6 +133,14 @@ def run_scraper(config: dict):
 
         total_new += new_count
         total_skipped += skip_count
+
+        source_summaries.append({
+            "source": name,
+            "total": len(all_records),
+            "new": new_count,
+            "skipped": skip_count,
+        })
+
         logger.info(f"  {name}: {len(all_records)} total (new={new_count}, skipped={skip_count})")
 
         # Small delay between sources
@@ -105,7 +148,19 @@ def run_scraper(config: dict):
             time.sleep(random.uniform(2, 5))
 
     db.close()
+
+    # Final cache stats
+    final_cache = get_cache_stats()
+    logger.info(f"\n{'='*60}")
     logger.info(f"Done. Total new: {total_new}, Total skipped (dupes): {total_skipped}")
+    logger.info(f"HTTP cache: {final_cache}")
+    logger.info(f"{'='*60}")
+
+    return {
+        "total_new": total_new,
+        "total_skipped": total_skipped,
+        "sources": source_summaries,
+    }
 
 
 if __name__ == "__main__":
