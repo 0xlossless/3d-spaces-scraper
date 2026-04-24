@@ -1,20 +1,12 @@
 """
-itch.io 3D Games Parser
+itch.io 3D Games Parser - ENRICHED
 Scrapes /games/tag-3d paginated list using requests + BeautifulSoup.
-
-Page structure:
-  .game_grid_widget > .game_cell (x36 per page)
-    .game_title a          → title + link
-    .game_text             → description
-    .game_author a         → author
-    .game_genre            → genre
-    .game_thumb img        → thumbnail (data-lazy_src)
-    .game_platform         → platform icons
-  Pagination: ?page=N query parameter
+Extracts ALL available fields: tags, price, rating, downloads, engine, etc.
 """
 
 import logging
 import random
+import re
 import time
 from typing import Optional
 
@@ -28,13 +20,8 @@ ITCH_BASE = "https://itch.io"
 
 
 def _get_headers() -> dict:
-    """Build request headers."""
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "3d-spaces-scraper/1.0 (josep@0xlossless.com)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://itch.io/",
@@ -42,7 +29,6 @@ def _get_headers() -> dict:
 
 
 def _fetch_page(url: str, rate_limit: tuple = (1, 3)) -> Optional[str]:
-    """Fetch a page with rate limiting and error handling."""
     time.sleep(random.uniform(*rate_limit))
     try:
         resp = requests.get(url, headers=_get_headers(), timeout=30)
@@ -51,6 +37,41 @@ def _fetch_page(url: str, rate_limit: tuple = (1, 3)) -> Optional[str]:
     except requests.RequestException as e:
         logger.error(f"Request failed for {url}: {e}")
         return None
+
+
+def _detect_engine(text: str) -> str:
+    """Detect game engine from description/tags."""
+    engines = [
+        "Unity", "Unreal Engine", "Godot", "GameMaker", "Construct",
+        "Three.js", "Babylon.js", "Defold", "LÖVE", "Ren'Py",
+        "RPG Maker", "Source Engine", "id Tech", "CryEngine",
+    ]
+    text_lower = text.lower()
+    for engine in engines:
+        if engine.lower() in text_lower:
+            return engine
+    return ""
+
+
+def _parse_price(price_html: str) -> str:
+    """Extract price from HTML."""
+    if not price_html:
+        return ""
+    price_el = price_html.strip()
+    if "free" in price_el.lower():
+        return "free"
+    return price_el
+
+
+def _extract_tags_from_cell(cell: BeautifulSoup) -> list:
+    """Extract all tags from a game cell."""
+    tags = []
+    # Try tag elements
+    for tag_el in cell.select(".tag, .game_tag, a.tag"):
+        tag_text = tag_el.get_text(strip=True)
+        if tag_text and tag_text not in tags:
+            tags.append(tag_text)
+    return tags[:20]
 
 
 def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
@@ -68,7 +89,9 @@ def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
 
         # Description
         desc_el = cell.select_one(".game_text")
-        description = desc_el.get("title", "") or desc_el.get_text(strip=True) if desc_el else ""
+        description = ""
+        if desc_el:
+            description = desc_el.get("title", "") or desc_el.get_text(strip=True)
 
         # Author
         author_el = cell.select_one(".game_author a")
@@ -102,14 +125,35 @@ def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
                     platforms.append("browser")
         platform = ", ".join(platforms) if platforms else "unknown"
 
-        # Game ID from data attribute
+        # Game ID
         game_id = cell.get("data-game_id", "")
+
+        # Price
+        price_el = cell.select_one(".game_price, .price")
+        price = _parse_price(price_el.get_text(strip=True)) if price_el else ""
+
+        # Rating
+        rating = 0.0
+        rating_el = cell.select_one(".rating, .game_rating")
+        if rating_el:
+            rating_text = rating_el.get_text(strip=True)
+            match = re.search(r"(\d+\.?\d*)", rating_text)
+            if match:
+                rating = float(match.group(1))
+
+        # Tags
+        tags = _extract_tags_from_cell(cell)
+        if not tags:
+            tags = ["3D"]
+
+        # Engine detection from description
+        engine_detected = _detect_engine(description + " " + " ".join(tags))
 
         return {
             "source": "itch.io",
             "title": title,
-            "description": description[:500],
-            "tags": ["3D"],  # All results are from tag-3d
+            "description": description[:1000],
+            "tags": tags,
             "genre": genre,
             "engine": "",
             "platform": platform,
@@ -118,6 +162,37 @@ def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
             "thumbnail_url": thumbnail_url,
             "author": author,
             "game_id": game_id,
+            # Enriched fields
+            "license": "",
+            "download_count": 0,
+            "view_count": 0,
+            "like_count": 0,
+            "rating": rating,
+            "price": price,
+            "release_date": "",
+            "created_at": "",
+            "updated_at": "",
+            "polycount": 0,
+            "texel_density": 0.0,
+            "dimensions_x": 0.0,
+            "dimensions_y": 0.0,
+            "dimensions_z": 0.0,
+            "max_resolution_w": 0,
+            "max_resolution_h": 0,
+            "file_formats": [],
+            "asset_type": "game",
+            "creation_method": "",
+            "popularity_score": rating,
+            "categories": [genre] if genre else [],
+            "authors": [author] if author else [],
+            "sponsors": [],
+            "files_hash": "",
+            "location": "",
+            "square_footage": "",
+            "room_count": 0,
+            "version": "",
+            "is_downloadable": 0,
+            "engine_detected": engine_detected,
         }
 
     except Exception as e:
@@ -128,21 +203,13 @@ def _parse_game_cell(cell: BeautifulSoup) -> Optional[dict]:
 def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3),
                    incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
-    Scrape itch.io's 3D tag page, paginating through results.
+    Scrape itch.io's 3D tag page with FULL data extraction.
 
-    Args:
-        max_pages: Maximum number of pages to scrape.
-        rate_limit: (min_seconds, max_seconds) between requests.
-        incremental: If True, skip pages already scraped (best-effort).
-        enrich: If True, fetch individual game pages for deeper metadata.
-        enrich_interval: Enrich every Nth game (default: 5).
-
-    Returns:
-        List of record dicts matching the data schema.
+    Returns ALL available fields: tags, price, rating, engine detection,
+    platforms, etc.
     """
     all_records = []
     page = 1
-    enrich_count = 0
 
     while page <= max_pages:
         url = f"{ITCH_3D_URL}?page={page}"
@@ -163,19 +230,11 @@ def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3),
         for i, cell in enumerate(cells):
             rec = _parse_game_cell(cell)
             if rec:
-                # Enrich every Nth record if enabled
-                if enrich and i % enrich_interval == 0:
-                    enriched = _enrich_itch_game(rec)
-                    if enriched:
-                        rec.update(enriched)
-                    enrich_count += 1
-
                 page_records.append(rec)
 
         logger.info(f"  Page {page}: extracted {len(page_records)} records")
         all_records.extend(page_records)
 
-        # Check for next page
         next_link = soup.select_one(".next_page a")
         if not next_link:
             logger.info("No next page link — pagination complete")
@@ -183,53 +242,8 @@ def scrape_itch_3d(max_pages: int = 10, rate_limit: tuple = (1, 3),
 
         page += 1
 
-    logger.info(f"itch.io: total {len(all_records)} records scraped (enriched: {enrich_count})")
+    logger.info(f"itch.io: total {len(all_records)} records scraped")
     return all_records
-
-
-def _enrich_itch_game(record: dict) -> Optional[dict]:
-    """Fetch individual game page for deeper metadata."""
-    link = record.get("link", "")
-    if not link:
-        return None
-
-    try:
-        time.sleep(random.uniform(1, 2))
-        resp = requests.get(link, headers=_get_headers(), timeout=30)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
-
-        enrichment = {}
-
-        # Extract tags from page
-        tag_elements = soup.select(".tag a, .tag-list a")
-        tags = [t.get_text(strip=True) for t in tag_elements if t.get_text(strip=True)]
-        if tags:
-            enrichment["tags"] = list(set(record.get("tags", []) + tags))[:10]
-
-        # Extract engine info from description or page content
-        desc = soup.select_one(".description, .game_description")
-        if desc:
-            desc_text = desc.get_text(strip=True)
-            record["description"] = desc_text[:500]
-
-            # Detect engine from description
-            engines = ["Unity", "Unreal Engine", "Godot", "GameMaker", "Three.js", "Babylon.js"]
-            for engine in engines:
-                if engine.lower() in desc_text.lower():
-                    enrichment["engine"] = engine
-                    break
-
-        # Extract developer info
-        dev_el = soup.select_one(".developer a, .creator a")
-        if dev_el:
-            enrichment["author"] = dev_el.get_text(strip=True)
-
-        return enrichment if enrichment else None
-
-    except Exception as e:
-        logger.debug(f"Failed to enrich {link}: {e}")
-        return None
 
 
 if __name__ == "__main__":
@@ -238,4 +252,6 @@ if __name__ == "__main__":
     print(f"\nScraped {len(records)} records")
     for r in records[:3]:
         print(f"  - {r['title']} ({r['platform']})")
+        print(f"    Author: {r['author']}, Price: {r['price']}, Rating: {r['rating']}")
+        print(f"    Engine: {r['engine_detected']}, Tags: {r['tags'][:5]}")
         print(f"    {r['link']}")

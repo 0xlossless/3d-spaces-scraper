@@ -1,6 +1,7 @@
 """
-Sketchfab 3D Models Parser
+Sketchfab 3D Models Parser - ENRICHED
 Uses the public Sketchfab REST API v3 — no auth needed for public models.
+Extracts ALL available fields: downloads, likes, views, licenses, dates, etc.
 
 API docs: https://sketchfab.com/developers/api/docs
 Endpoint: https://api.sketchfab.com/v3/models
@@ -21,7 +22,7 @@ SKETCHFAB_BASE = "https://sketchfab.com"
 
 def _get_headers() -> dict:
     return {
-        "User-Agent": "3d-spaces-scraper/1.0",
+        "User-Agent": "3d-spaces-scraper/1.0 (josep@0xlossless.com)",
         "Accept": "application/json",
     }
 
@@ -35,7 +36,6 @@ def _fetch(url: str, rate_limit: tuple = (5, 8), max_retries: int = 3) -> Option
             resp = requests.get(url, headers=_get_headers(), timeout=30)
 
             if resp.status_code == 429:
-                # Rate limited — wait and retry
                 retry_after = int(resp.headers.get("Retry-After", 15))
                 wait = retry_after + random.uniform(5, 10)
                 logger.warning(f"Rate limited (429), waiting {wait:.1f}s...")
@@ -53,24 +53,58 @@ def _fetch(url: str, rate_limit: tuple = (5, 8), max_retries: int = 3) -> Option
     return None
 
 
+def _format_size(size_bytes: int) -> str:
+    """Convert bytes to human-readable size."""
+    if not size_bytes:
+        return ""
+    if size_bytes > 1_073_741_824:
+        return f"{size_bytes / 1_073_741_824:.1f} GB"
+    elif size_bytes > 1_048_576:
+        return f"{size_bytes / 1_048_576:.1f} MB"
+    else:
+        return f"{size_bytes / 1024:.1f} KB"
+
+
+def _detect_engine(tags: list, description: str) -> str:
+    """Detect 3D engine from tags and description."""
+    engines = {
+        "Unity": ["unity", "unity3d"],
+        "Unreal Engine": ["unreal", "unreal engine", "ue4", "ue5"],
+        "Blender": ["blender"],
+        "Godot": ["godot"],
+        "Maya": ["maya"],
+        "Cinema 4D": ["cinema 4d", "c4d"],
+        "3ds Max": ["3ds max", "max"],
+        "Substance": ["substance", "substance painter"],
+    }
+    
+    text = " ".join(tags).lower() + " " + description.lower()
+    for engine, keywords in engines.items():
+        for kw in keywords:
+            if kw in text:
+                return engine
+    return ""
+
+
 def _parse_model(model: dict) -> Optional[dict]:
-    """Convert a Sketchfab model object to our data schema."""
+    """Convert a Sketchfab model object to our enriched data schema."""
     try:
         uid = model.get("uid", "")
         name = model.get("name", "")
         if not uid or not name:
             return None
 
+        # Tags
         tags_raw = model.get("tags", [])
-        # Tags can be strings or objects with 'name' key
         tags = []
         for t in tags_raw:
             if isinstance(t, dict):
                 tags.append(t.get("name", ""))
             elif isinstance(t, str):
                 tags.append(t)
-        tags = [t for t in tags if t][:10]
+        tags = [t for t in tags if t][:20]
 
+        # Categories
         categories_raw = model.get("categories", [])
         categories = []
         for c in categories_raw:
@@ -86,37 +120,53 @@ def _parse_model(model: dict) -> Optional[dict]:
             best = max(thumbnails, key=lambda t: t.get("width", 0))
             thumbnail_url = best.get("url", "")
 
+        # Author
         user = model.get("user", {})
         author = user.get("displayName") or user.get("username", "")
 
+        # Link
         viewer_url = model.get("viewerUrl", "")
         if not viewer_url:
             viewer_url = f"{SKETCHFAB_BASE}/3d-models/none-{uid}"
 
+        # Description
         description = model.get("description", "") or ""
         if description:
-            description = description[:500]
+            description = description[:1000]
 
-        # Get file size from archives if available
+        # File size from archives
         file_size = ""
+        file_formats = []
         archives = model.get("archives", {})
         if archives:
-            glb = archives.get("glb", {})
-            if glb and glb.get("size"):
-                size_bytes = glb["size"]
-                if size_bytes > 1_073_741_824:
-                    file_size = f"{size_bytes / 1_073_741_824:.1f} GB"
-                elif size_bytes > 1_048_576:
-                    file_size = f"{size_bytes / 1_048_576:.1f} MB"
-                else:
-                    file_size = f"{size_bytes / 1024:.1f} KB"
+            for fmt, info in archives.items():
+                if isinstance(info, dict) and info.get("size"):
+                    file_size = _format_size(info["size"])
+                    ext = fmt.lower()
+                    if ext not in file_formats:
+                        file_formats.append(ext)
 
-        view_count = model.get("viewCount", 0)
+        # Stats
+        view_count = model.get("viewCount", 0) or 0
+        download_count = model.get("downloadCount", 0) or 0
+        like_count = model.get("likeCount", 0) or 0
+
+        # License
         license_info = model.get("license", {})
         if isinstance(license_info, dict):
             license_label = license_info.get("label", "")
         else:
             license_label = ""
+
+        # Dates
+        created_at = model.get("createdAt", "") or ""
+        updated_at = model.get("updatedAt", "") or ""
+
+        # Downloadable flag
+        is_downloadable = 1 if model.get("downloadable", False) else 0
+
+        # Engine detection
+        engine_detected = _detect_engine(tags, description)
 
         return {
             "source": "sketchfab",
@@ -131,6 +181,37 @@ def _parse_model(model: dict) -> Optional[dict]:
             "thumbnail_url": thumbnail_url,
             "author": author,
             "game_id": uid,
+            # Enriched fields
+            "license": license_label,
+            "download_count": download_count,
+            "view_count": view_count,
+            "like_count": like_count,
+            "rating": 0.0,
+            "price": "",
+            "release_date": created_at,
+            "created_at": created_at,
+            "updated_at": updated_at,
+            "polycount": 0,
+            "texel_density": 0.0,
+            "dimensions_x": 0.0,
+            "dimensions_y": 0.0,
+            "dimensions_z": 0.0,
+            "max_resolution_w": 0,
+            "max_resolution_h": 0,
+            "file_formats": file_formats,
+            "asset_type": "model",
+            "creation_method": "",
+            "popularity_score": float(view_count + download_count),
+            "categories": categories,
+            "authors": [author],
+            "sponsors": [],
+            "files_hash": "",
+            "location": "",
+            "square_footage": "",
+            "room_count": 0,
+            "version": "",
+            "is_downloadable": is_downloadable,
+            "engine_detected": engine_detected,
         }
 
     except Exception as e:
@@ -141,25 +222,14 @@ def _parse_model(model: dict) -> Optional[dict]:
 def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8),
                      incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
-    Scrape Sketchfab's public 3D models via REST API.
+    Scrape Sketchfab's public 3D models via REST API with FULL data extraction.
 
-    Uses cursor-based pagination with conservative rate limiting.
-    No enrichment calls — the list endpoint already returns rich metadata.
-
-    Args:
-        max_pages: Maximum number of pages to scrape.
-        rate_limit: (min_seconds, max_seconds) between list requests.
-        incremental: If True, skip pages already scraped (best-effort).
-        enrich: If True, fetch individual model pages for deeper metadata.
-        enrich_interval: Enrich every Nth model (default: 5).
-
-    Returns:
-        List of record dicts matching the data schema.
+    Returns ALL available fields: downloads, likes, views, licenses,
+    dates, file formats, engine detection, etc.
     """
     all_records = []
     page = 1
 
-    # Build initial URL with query params
     url = SKETCHFAB_API
     params = {
         "sort": "views",
@@ -191,7 +261,6 @@ def scrape_sketchfab(max_pages: int = 10, rate_limit: tuple = (5, 8),
         logger.info(f"  Page {page}: extracted {len(page_records)} records")
         all_records.extend(page_records)
 
-        # Use the 'next' URL for cursor-based pagination
         next_url = data.get("next")
         if not next_url:
             logger.info("No next page — pagination complete")
@@ -210,5 +279,6 @@ if __name__ == "__main__":
     print(f"\nScraped {len(records)} records")
     for r in records[:3]:
         print(f"  - {r['title']} by {r['author']}")
-        print(f"    Tags: {r['tags']}")
+        print(f"    Views: {r['view_count']}, Downloads: {r['download_count']}, Likes: {r['like_count']}")
+        print(f"    License: {r['license']}, Engine: {r['engine_detected']}")
         print(f"    {r['link']}")

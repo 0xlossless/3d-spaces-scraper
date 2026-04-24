@@ -1,12 +1,14 @@
 """
-OpenGameArt.org 3D Models Parser
+OpenGameArt.org 3D Models Parser - ENRICHED
 Scrapes 3D model listings from OpenGameArt.org.
+Extracts ALL available fields: license, downloads, rating, file formats, etc.
 
 Uses the art search with proper form parameters.
 """
 
 import logging
 import random
+import re
 import time
 from typing import Optional
 
@@ -21,11 +23,7 @@ OGA_BASE = "https://opengameart.org"
 
 def _get_headers() -> dict:
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "3d-spaces-scraper/1.0 (josep@0xlossless.com)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": "https://opengameart.org/",
@@ -50,7 +48,6 @@ def _is_3d_related(title: str, tags: list) -> bool:
     tags_lower = [t.lower() for t in tags]
     all_text = title_lower + " " + " ".join(tags_lower)
 
-    # Keywords that indicate 3D content
     _3d_keywords = [
         "3d", "model", "models", "mesh", "polygon", "poly", "lowpoly", "low-poly",
         "obj", "fbx", "gltf", "glb", "blend", "maya", "blender", "c4d",
@@ -61,11 +58,34 @@ def _is_3d_related(title: str, tags: list) -> bool:
     return any(kw in all_text for kw in _3d_keywords)
 
 
+def _extract_license(text: str) -> str:
+    """Extract license type from text."""
+    if not text:
+        return ""
+    lower = text.lower()
+    if "cc0" in lower:
+        return "CC0"
+    elif "cc-by" in lower:
+        return "CC-BY"
+    elif "cc-by-nc" in lower:
+        return "CC-BY-NC"
+    elif "cc-by-sa" in lower:
+        return "CC-BY-SA"
+    elif "cc-by-nd" in lower:
+        return "CC-BY-ND"
+    elif "gpl" in lower:
+        return "GPL"
+    elif "mit" in lower:
+        return "MIT"
+    elif "public domain" in lower:
+        return "Public Domain"
+    return text
+
+
 def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
     """Extract art items from search results."""
     records = []
 
-    # Find all content links (art items)
     content_links = soup.select('a[href^="/content/"]')
 
     seen = set()
@@ -79,10 +99,8 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
         if not title or len(title) < 2:
             continue
 
-        # Build full URL
         full_url = OGA_BASE + href if href.startswith("/") else href
 
-        # Get parent container for more info
         parent = link.parent
         if not parent:
             continue
@@ -93,16 +111,16 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
         if thumb:
             thumbnail_url = thumb.get("src", "") or thumb.get("data-src", "")
 
-        # Find tags in parent
+        # Tags
         tags = []
-        for tag_link in parent.select("a[href^=\"/tag/\"]"):
+        for tag_link in parent.select('a[href^="/tag/"]'):
             tag_text = tag_link.get_text(strip=True)
             if tag_text:
                 tags.append(tag_text)
 
-        # Find author
+        # Author
         author = ""
-        author_el = parent.select_one("a[href^=\"/user/\"]")
+        author_el = parent.select_one('a[href^="/user/"]')
         if author_el:
             author = author_el.get_text(strip=True)
 
@@ -110,16 +128,48 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
         if not _is_3d_related(title, tags):
             continue
 
-        # License from parent
-        license_el = parent.select_one("a[href*=\"license\"]")
-        genre = license_el.get_text(strip=True) if license_el else ""
+        # License
+        license_el = parent.select_one('a[href*="license"]')
+        license_text = license_el.get_text(strip=True) if license_el else ""
+        license_type = _extract_license(license_text)
+
+        # Description from parent
+        desc_el = parent.select_one(".description, p, .text")
+        description = ""
+        if desc_el:
+            description = desc_el.get_text(strip=True)[:500]
+
+        # File formats from tags
+        file_formats = []
+        format_keywords = ["obj", "fbx", "gltf", "glb", "blend", "stl", "dae", "ply", "abc"]
+        for tag in tags:
+            if tag.lower() in format_keywords:
+                file_formats.append(tag.lower())
+
+        # Rating (if available)
+        rating = 0.0
+        rating_el = parent.select_one(".rating, .stars, [class*='rate']")
+        if rating_el:
+            rating_text = rating_el.get_text(strip=True)
+            match = re.search(r"(\d+\.?\d*)", rating_text)
+            if match:
+                rating = float(match.group(1))
+
+        # Download count (if available)
+        download_count = 0
+        downloads_el = parent.select_one(".downloads, .download-count, [class*='download']")
+        if downloads_el:
+            dl_text = downloads_el.get_text(strip=True)
+            match = re.search(r"(\d+)", dl_text)
+            if match:
+                download_count = int(match.group(1))
 
         record = {
             "source": "opengameart",
             "title": title,
-            "description": "",
-            "tags": tags[:10],
-            "genre": genre,
+            "description": description,
+            "tags": tags[:20],
+            "genre": license_type,
             "engine": "",
             "platform": "multiplatform",
             "file_size": "",
@@ -127,6 +177,37 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
             "thumbnail_url": thumbnail_url,
             "author": author,
             "game_id": "",
+            # Enriched fields
+            "license": license_type,
+            "download_count": download_count,
+            "view_count": 0,
+            "like_count": 0,
+            "rating": rating,
+            "price": "free",
+            "release_date": "",
+            "created_at": "",
+            "updated_at": "",
+            "polycount": 0,
+            "texel_density": 0.0,
+            "dimensions_x": 0.0,
+            "dimensions_y": 0.0,
+            "dimensions_z": 0.0,
+            "max_resolution_w": 0,
+            "max_resolution_h": 0,
+            "file_formats": file_formats,
+            "asset_type": "model",
+            "creation_method": "",
+            "popularity_score": float(download_count + rating),
+            "categories": [],
+            "authors": [author] if author else [],
+            "sponsors": [],
+            "files_hash": "",
+            "location": "",
+            "square_footage": "",
+            "room_count": 0,
+            "version": "",
+            "is_downloadable": 1,
+            "engine_detected": "",
         }
         records.append(record)
 
@@ -136,16 +217,10 @@ def _parse_art_links(soup: BeautifulSoup) -> list[dict]:
 def scrape_opengameart(max_pages: int = 10, rate_limit: tuple = (2, 4),
                        incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
-    Scrape OpenGameArt.org for 3D models.
+    Scrape OpenGameArt.org for 3D models with FULL data extraction.
 
-    Searches for "model" keyword to find 3D model listings.
-
-    Args:
-        max_pages: Maximum number of pages to scrape.
-        rate_limit: (min_seconds, max_seconds) between requests.
-
-    Returns:
-        List of record dicts matching the data schema.
+    Returns ALL available fields: license, downloads, rating, file formats,
+    authors, etc.
     """
     all_records = []
     seen_urls = set()
@@ -162,7 +237,6 @@ def scrape_opengameart(max_pages: int = 10, rate_limit: tuple = (2, 4),
         soup = BeautifulSoup(html, "lxml")
         records = _parse_art_links(soup)
 
-        # Deduplicate
         new_records = []
         for r in records:
             if r["link"] not in seen_urls:
@@ -176,7 +250,6 @@ def scrape_opengameart(max_pages: int = 10, rate_limit: tuple = (2, 4),
         logger.info(f"  Page {page + 1}: extracted {len(new_records)} records")
         all_records.extend(new_records)
 
-        # Check for next page
         next_link = soup.select_one(".pager-next a, .pagination-next a")
         if not next_link:
             logger.info("No next page link — pagination complete")
@@ -192,5 +265,6 @@ if __name__ == "__main__":
     print(f"\nScraped {len(records)} records")
     for r in records[:5]:
         print(f"  - {r['title']} by {r['author']}")
-        print(f"    Tags: {r['tags']}")
+        print(f"    License: {r['license']}, Downloads: {r['download_count']}")
+        print(f"    Tags: {r['tags'][:5]}, Formats: {r['file_formats']}")
         print(f"    {r['link']}")

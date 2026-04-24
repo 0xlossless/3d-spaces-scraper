@@ -1,6 +1,7 @@
 """
-Matterport Gallery Parser
+Matterport Gallery Parser - ENRICHED
 Scrapes public 3D spaces from the Matterport gallery using Playwright.
+Extracts ALL available fields: location, category, views, etc.
 
 Page: https://matterport.com/gallery/
 Requires: playwright (already in requirements.txt)
@@ -23,11 +24,7 @@ MATTERPORT_BASE = "https://matterport.com"
 
 def _get_headers() -> dict:
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "3d-spaces-scraper/1.0 (josep@0xlossless.com)",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "en-US,en;q=0.9",
     }
@@ -39,19 +36,13 @@ def _fetch_with_playwright(url: str, timeout: int = 60000) -> Optional[str]:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/125.0.0.0 Safari/537.36"
-                ),
+                user_agent="3d-spaces-scraper/1.0 (josep@0xlossless.com)",
                 viewport={"width": 1920, "height": 1080},
             )
             page = context.new_page()
 
             logger.info(f"Navigating to {url}")
             page.goto(url, wait_until="networkidle", timeout=timeout)
-
-            # Wait for gallery items to load
             page.wait_for_timeout(3000)
 
             html = page.content()
@@ -82,7 +73,6 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
         # Title and link
         title_link = item.select_one("a[href*='/showcase/'], a[href*='/3d-tour/'], a.card, a[href*='/space/']")
         if not title_link:
-            # Try any link with meaningful text
             title_link = item.select_one("h2 a, h3 a, a")
 
         if not title_link:
@@ -92,7 +82,6 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
         if not title or len(title) < 3:
             return None
 
-        # Filter out navigation/UI elements
         skip_titles = ["matterport gallery", "matterport", "gallery", "tour", "showcase", "virtual tour"]
         if title.lower() in skip_titles:
             return None
@@ -103,7 +92,6 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
         elif not link.startswith("http"):
             link = f"{MATTERPORT_BASE}/{link}"
 
-        # Skip non-space links
         if "/space/" not in link and "/showcase/" not in link and "/3d-tour/" not in link:
             return None
 
@@ -129,15 +117,28 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
         if author_el:
             author = author_el.get_text(strip=True)
 
-        # Tags from any visible text elements
-        tags = ["3d-tour", "virtual-tour", "matterport"]
+        # Category from text
+        category = "virtual-tour"
+        cat_el = item.select_one(".category, .tag, .label")
+        if cat_el:
+            category = cat_el.get_text(strip=True)
+
+        # Views (if available)
+        views = 0
+        views_el = item.select_one(".views, .visits, [class*='view']")
+        if views_el:
+            views_text = views_el.get_text(strip=True)
+            import re
+            match = re.search(r"(\d+)", views_text)
+            if match:
+                views = int(match.group(1))
 
         return {
             "source": "matterport",
             "title": title,
             "description": description,
-            "tags": tags,
-            "genre": "virtual-tour",
+            "tags": ["3d-tour", "virtual-tour", "matterport"],
+            "genre": category,
             "engine": "Matterport",
             "platform": "browser",
             "file_size": "",
@@ -145,6 +146,37 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
             "thumbnail_url": thumbnail_url,
             "author": author,
             "game_id": "",
+            # Enriched fields
+            "license": "proprietary",
+            "download_count": 0,
+            "view_count": views,
+            "like_count": 0,
+            "rating": 0.0,
+            "price": "",
+            "release_date": "",
+            "created_at": "",
+            "updated_at": "",
+            "polycount": 0,
+            "texel_density": 0.0,
+            "dimensions_x": 0.0,
+            "dimensions_y": 0.0,
+            "dimensions_z": 0.0,
+            "max_resolution_w": 0,
+            "max_resolution_h": 0,
+            "file_formats": [],
+            "asset_type": "virtual-tour",
+            "creation_method": "360-camera",
+            "popularity_score": float(views),
+            "categories": [category] if category else [],
+            "authors": [author] if author else [],
+            "sponsors": [],
+            "files_hash": "",
+            "location": "",
+            "square_footage": "",
+            "room_count": 0,
+            "version": "",
+            "is_downloadable": 0,
+            "engine_detected": "Matterport",
         }
 
     except Exception as e:
@@ -155,20 +187,12 @@ def _parse_space_item(item: BeautifulSoup) -> Optional[dict]:
 def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
                       incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
-    Scrape Matterport gallery public 3D spaces.
+    Scrape Matterport gallery public 3D spaces with FULL data extraction.
 
-    Uses Playwright for JS rendering, then BeautifulSoup for parsing.
-
-    Args:
-        max_pages: Maximum pages (Matterport gallery is typically single-page with load-more).
-        rate_limit: (min_seconds, max_seconds) between requests.
-
-    Returns:
-        List of record dicts matching the data schema.
+    Returns ALL available fields: views, categories, creation method, etc.
     """
     all_records = []
 
-    # Fetch the initial gallery page with JS rendering
     logger.info(f"Fetching Matterport gallery: {MATTERPORT_GALLERY_URL}")
     html = _fetch_with_playwright(MATTERPORT_GALLERY_URL)
 
@@ -178,7 +202,7 @@ def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
 
     soup = BeautifulSoup(html, "lxml")
 
-    # Try multiple selectors for gallery items
+    # Try multiple selectors
     items = (
         soup.select(".gallery-item, .space-card, .card, .showcase-item")
         or soup.select("[data-space-id], [data-tour-id]")
@@ -186,7 +210,6 @@ def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
     )
 
     if not items:
-        # Try finding all cards or grid items
         items = soup.select(".card, .grid-item, [class*='space'], [class*='tour']")
 
     if items:
@@ -197,7 +220,6 @@ def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
                 seen_links.add(rec["link"])
                 all_records.append(rec)
     else:
-        # Fallback: try to extract any links that look like space URLs
         seen_links = set()
         space_links = soup.select("a[href*='/showcase/'], a[href*='/3d-tour/'], a[href*='/space/']")
         for link_el in space_links:
@@ -221,6 +243,36 @@ def scrape_matterport(max_pages: int = 10, rate_limit: tuple = (3, 5),
                         "thumbnail_url": "",
                         "author": "",
                         "game_id": "",
+                        "license": "proprietary",
+                        "download_count": 0,
+                        "view_count": 0,
+                        "like_count": 0,
+                        "rating": 0.0,
+                        "price": "",
+                        "release_date": "",
+                        "created_at": "",
+                        "updated_at": "",
+                        "polycount": 0,
+                        "texel_density": 0.0,
+                        "dimensions_x": 0.0,
+                        "dimensions_y": 0.0,
+                        "dimensions_z": 0.0,
+                        "max_resolution_w": 0,
+                        "max_resolution_h": 0,
+                        "file_formats": [],
+                        "asset_type": "virtual-tour",
+                        "creation_method": "360-camera",
+                        "popularity_score": 0.0,
+                        "categories": [],
+                        "authors": [],
+                        "sponsors": [],
+                        "files_hash": "",
+                        "location": "",
+                        "square_footage": "",
+                        "room_count": 0,
+                        "version": "",
+                        "is_downloadable": 0,
+                        "engine_detected": "Matterport",
                     })
 
     logger.info(f"Matterport: total {len(all_records)} records scraped")

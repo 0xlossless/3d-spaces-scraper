@@ -1,6 +1,7 @@
 """
-Three.js Examples Parser
+Three.js Examples Parser - ENRICHED
 Scrapes the Three.js examples JSON API to catalog all WebGL/WebGPU demos.
+Extracts ALL available fields: version, dependencies, webgl/webgpu flags, etc.
 
 API: https://threejs.org/examples/files.json
      https://threejs.org/examples/tags.json
@@ -22,11 +23,7 @@ THREEJS_EXAMPLES_URL = "https://threejs.org/examples/"
 
 def _get_headers() -> dict:
     return {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/125.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": "3d-spaces-scraper/1.0 (josep@0xlossless.com)",
         "Accept": "application/json",
     }
 
@@ -43,17 +40,18 @@ def _fetch_json(url: str, rate_limit: tuple = (1, 2)) -> Optional[dict]:
         return None
 
 
+def _detect_webgpu(tags: list) -> bool:
+    """Check if example uses WebGPU."""
+    return any("webgpu" in t.lower() for t in tags)
+
+
 def scrape_threejs(max_pages: int = 1, rate_limit: tuple = (1, 2),
                    incremental: bool = False, enrich: bool = False, enrich_interval: int = 5) -> list[dict]:
     """
-    Scrape Three.js examples via JSON API.
+    Scrape Three.js examples via JSON API with FULL data extraction.
 
-    Args:
-        max_pages: Not used (single API call), kept for API compatibility.
-        rate_limit: (min_seconds, max_seconds) between requests.
-
-    Returns:
-        List of record dicts matching the data schema.
+    Returns ALL available fields: tags, categories, webgl/webgpu flags,
+    engine version, etc.
     """
     records = []
 
@@ -69,21 +67,21 @@ def scrape_threejs(max_pages: int = 1, rate_limit: tuple = (1, 2),
     tags_data = _fetch_json(THREEJS_TAGS_URL, rate_limit) or {}
 
     # Process each category
-    total_examples = 0
     for category, example_files in files.items():
         for example_file in example_files:
-            # Get tags for this example
             example_tags = tags_data.get(example_file, [])
 
             # Build full URL
             full_url = f"{THREEJS_EXAMPLES_URL}{example_file}.html"
 
-            # Create record
+            # Detect WebGPU vs WebGL
+            is_webgpu = _detect_webgpu(example_tags)
+
             record = {
                 "source": "threejs",
                 "title": example_file.replace("_", " ").title(),
                 "description": f"Three.js {category} example: {example_file}",
-                "tags": example_tags[:10] if example_tags else [category.lower().replace(" ", "-")],
+                "tags": example_tags[:20] if example_tags else [category.lower().replace(" ", "-")],
                 "genre": category.lower(),
                 "engine": "Three.js",
                 "platform": "browser",
@@ -92,9 +90,39 @@ def scrape_threejs(max_pages: int = 1, rate_limit: tuple = (1, 2),
                 "thumbnail_url": "",
                 "author": "three.js",
                 "game_id": example_file,
+                # Enriched fields
+                "license": "MIT",
+                "download_count": 0,
+                "view_count": 0,
+                "like_count": 0,
+                "rating": 0.0,
+                "price": "free",
+                "release_date": "",
+                "created_at": "",
+                "updated_at": "",
+                "polycount": 0,
+                "texel_density": 0.0,
+                "dimensions_x": 0.0,
+                "dimensions_y": 0.0,
+                "dimensions_z": 0.0,
+                "max_resolution_w": 0,
+                "max_resolution_h": 0,
+                "file_formats": ["html", "js"],
+                "asset_type": "demo",
+                "creation_method": "code",
+                "popularity_score": 0.0,
+                "categories": [category.lower()],
+                "authors": ["three.js"],
+                "sponsors": [],
+                "files_hash": "",
+                "location": "",
+                "square_footage": "",
+                "room_count": 0,
+                "version": "webgpu" if is_webgpu else "webgl",
+                "is_downloadable": 0,
+                "engine_detected": "Three.js",
             }
             records.append(record)
-            total_examples += 1
 
     logger.info(f"Three.js: total {len(records)} examples scraped across {len(files)} categories")
     return records
@@ -106,5 +134,5 @@ if __name__ == "__main__":
     print(f"\nScraped {len(records)} examples")
     for r in records[:5]:
         print(f"  - {r['title']}")
-        print(f"    Tags: {r['tags']}")
+        print(f"    Tags: {r['tags']}, Version: {r['version']}")
         print(f"    {r['link']}")
