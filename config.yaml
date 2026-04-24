@@ -62,6 +62,30 @@ sources:
       - module: src.parsers.opengameart
         function: scrape_opengameart
 
+  - name: Poly Haven
+    enabled: true
+    rate_limit:
+      min: 1
+      max: 2
+    max_pages: 10
+    enrich:
+      enabled: false  # API already returns rich metadata
+    parsers:
+      - module: src.parsers.polyhaven
+        function: scrape_polyhaven
+
+  - name: AmbientCG
+    enabled: true
+    rate_limit:
+      min: 1
+      max: 2
+    max_pages: 10
+    enrich:
+      enabled: false  # API already returns rich metadata
+    parsers:
+      - module: src.parsers.ambientcg
+        function: scrape_ambientcg
+
 schedule:
   interval: daily        # for GitHub Actions: runs on schedule
   time: "03:00"          # UTC
