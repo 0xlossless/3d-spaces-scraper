@@ -394,35 +394,47 @@ def cmd_verify(args):
 
 
 def _build_download_url(record: dict, dl_config: dict) -> str:
-    """Build download URL from record metadata."""
+    """Build download URL from record metadata.
+
+    Poly Haven CDN patterns:
+    - HDRIs:  dl.polyhaven.org/file/ph-assets/HDRIs/hdr/{res}/{id}_{res}.hdr
+    - Models: dl.polyhaven.org/file/ph-assets/Models/{fmt}/{res}/{id}/{id}_{res}.{fmt}
+    - Textures: dl.polyhaven.org/file/ph-assets/Textures/png/{res}/{id}/{id}_diff_{res}.png
+    """
     source = record.get("source", "")
     asset_id = record.get("game_id", "")
     asset_type = record.get("asset_type", "models")
 
     if source == "polyhaven":
-        # Poly Haven CDN pattern: dl.polyhaven.org/file/ph-assets/{Type}/{subpath}
         resolution = dl_config.get("max_resolution", "4k")
 
         if asset_type == "hdris":
             return f"https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/{resolution}/{asset_id}_{resolution}.hdr"
         elif asset_type == "models":
-            fmt = dl_config.get("preferred_formats", {}).get("models", ["obj"])[0]
-            return f"https://dl.polyhaven.org/file/ph-assets/Models/{fmt}/{asset_id}_{fmt}.zip"
+            # Models come as blend/fbx/gltf/usd - use blend as default (smallest, most compatible)
+            fmt = dl_config.get("preferred_formats", {}).get("models", ["blend"])[0]
+            return f"https://dl.polyhaven.org/file/ph-assets/Models/{fmt}/{resolution}/{asset_id}/{asset_id}_{resolution}.{fmt}"
         elif asset_type == "textures":
-            return f"https://dl.polyhaven.org/file/ph-assets/Textures/{resolution}/{asset_id}_{resolution}.zip"
+            # Textures come as individual maps (diffuse, normal, etc.) in png/jpg/exr
+            # Download diffuse map as representative
+            fmt = dl_config.get("preferred_formats", {}).get("textures", ["png"])[0]
+            return f"https://dl.polyhaven.org/file/ph-assets/Textures/{fmt}/{resolution}/{asset_id}/{asset_id}_diff_{resolution}.{fmt}"
 
     return ""
 
 
 def _build_filename(asset_id: str, asset_type: str, dl_config: dict) -> str:
     """Build standardized filename."""
+    resolution = dl_config.get("max_resolution", "4k")
+
     if asset_type == "hdris":
-        return f"{asset_id}_{dl_config.get('max_resolution', '4k')}.hdr"
+        return f"{asset_id}_{resolution}.hdr"
     elif asset_type == "models":
-        fmt = dl_config.get("preferred_formats", {}).get("models", ["glb"])[0]
-        return f"{asset_id}_{fmt}.zip"
+        fmt = dl_config.get("preferred_formats", {}).get("models", ["blend"])[0]
+        return f"{asset_id}_{resolution}.{fmt}"
     elif asset_type == "textures":
-        return f"{asset_id}_{dl_config.get('max_resolution', '4k')}.zip"
+        fmt = dl_config.get("preferred_formats", {}).get("textures", ["png"])[0]
+        return f"{asset_id}_diff_{resolution}.{fmt}"
     return f"{asset_id}.zip"
 
 

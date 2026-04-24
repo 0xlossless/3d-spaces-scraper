@@ -108,9 +108,9 @@ downloads:
   rate_limit: 2.0     # seconds between requests
   max_retries: 3
   preferred_formats:
-    models: [glb, obj, fbx]
+    models: [blend]    # blend, fbx, gltf, usd
     hdris: [hdr]
-    textures: [png]
+    textures: [png]    # png, jpg, exr
   per_source_limits:
     polyhaven:
       max_gb: 30
