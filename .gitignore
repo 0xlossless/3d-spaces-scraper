@@ -25,5 +25,20 @@ Thumbs.db
 # Database (large, regenerated)
 data/*.db
 
+# Downloaded 3D assets (large files)
+data/assets/*.hdr
+data/assets/*.exr
+data/assets/*.zip
+data/assets/*.obj
+data/assets/*.glb
+data/assets/*.fbx
+data/assets/**/*.hdr
+data/assets/**/*.exr
+data/assets/**/*.zip
+data/assets/**/*.obj
+data/assets/**/*.glb
+data/assets/**/*.fbx
+data/assets/manifest.json
+
 # Logs
 *.log

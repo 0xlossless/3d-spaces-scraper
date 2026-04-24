@@ -100,6 +100,28 @@ scraping:
 storage:
   database: data/3d_spaces.db
 
+downloads:
+  enabled: true
+  base_path: data/assets
+  max_total_gb: 50
+  max_resolution: 4k  # 4k, 2k, 1k
+  rate_limit: 2.0     # seconds between requests
+  max_retries: 3
+  preferred_formats:
+    models: [glb, obj, fbx]
+    hdris: [hdr]
+    textures: [png]
+  per_source_limits:
+    polyhaven:
+      max_gb: 30
+      priority: high
+    ambientcg:
+      max_gb: 15
+      priority: medium
+    sketchfab:
+      max_gb: 5
+      priority: low
+
 user_agents:
   - "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
   - "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"

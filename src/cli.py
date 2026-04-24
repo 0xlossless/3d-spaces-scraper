@@ -29,6 +29,9 @@ from src.quality import DataQualityPipeline
 from src.analytics import AnalyticsEngine
 from src.dedup import DeduplicationEngine
 from src.dashboard import Dashboard
+from src.pipeline.storage import StorageManager, StorageConfig
+from src.pipeline.downloader import Downloader
+from src.pipeline.manifest import Manifest
 
 
 def cmd_run(args):
@@ -223,6 +226,206 @@ def cmd_dashboard(args):
     db.close()
 
 
+def cmd_download(args):
+    """Download actual 3D assets."""
+    config = load_config()
+    dl_config = config.get("downloads", {})
+
+    if not dl_config.get("enabled", False):
+        print("❌ Downloads disabled in config.yaml")
+        return
+
+    # Setup storage manager
+    storage = StorageConfig(
+        base_path=Path(dl_config.get("base_path", "data/assets")),
+        max_total_bytes=dl_config.get("max_total_gb", 50) * 1024**3,
+        max_resolution=dl_config.get("max_resolution", "4k"),
+    )
+    manager = StorageManager(storage)
+    downloader = Downloader(
+        manager,
+        rate_limit=dl_config.get("rate_limit", 2.0),
+        max_retries=dl_config.get("max_retries", 3),
+    )
+    manifest = Manifest()
+    db = Database(config["storage"]["database"])
+
+    # Show current storage status
+    manager.print_stats()
+
+    # Get downloadable records
+    source = args.source
+    limit = args.limit
+    downloadable = db.get_downloadable(source=source, limit=limit)
+
+    if not downloadable:
+        print(f"\n✅ No new downloads needed{' ' + f'for {source}' if source else ''}")
+        db.close()
+        return
+
+    print(f"\n📥 Found {len(downloadable)} downloadable assets")
+
+    # Build download list
+    downloads = []
+    for record in downloadable:
+        asset_id = record.get("game_id", "")
+        asset_type = record.get("asset_type", "models")
+        source_name = record.get("source", "unknown")
+
+        # Skip if already in manifest
+        if manifest.is_downloaded(source_name, asset_id, asset_type):
+            continue
+
+        # Build download URL based on source
+        url = _build_download_url(record, dl_config)
+        if not url:
+            continue
+
+        # Determine filename and path
+        filename = _build_filename(asset_id, asset_type, dl_config)
+        file_path = manager.get_file_path(source_name, asset_type, filename)
+
+        downloads.append({
+            "url": url,
+            "path": str(file_path),
+            "hash": record.get("files_hash", ""),
+            "record": record,
+        })
+
+    if not downloads:
+        print("✅ All assets already downloaded")
+        db.close()
+        return
+
+    # Show what will be downloaded
+    print(f"\n📋 Download queue: {len(downloads)} files")
+    for dl in downloads[:5]:
+        print(f"  - {Path(dl['path']).name}")
+    if len(downloads) > 5:
+        print(f"  ... and {len(downloads) - 5} more")
+
+    # Confirm
+    if not args.yes:
+        response = input(f"\nDownload {len(downloads)} files? [y/N]: ")
+        if response.lower() not in ("y", "yes"):
+            print("Cancelled.")
+            db.close()
+            return
+
+    # Execute downloads
+    print(f"\n{'='*50}")
+    print(f"Starting downloads...")
+    print(f"{'='*50}")
+
+    results = downloader.download_batch(downloads, source or "mixed")
+
+    # Update database and manifest
+    success = 0
+    failed = 0
+    for result in results:
+        if "error" not in result:
+            record = None
+            for dl in downloads:
+                if dl["path"] == result["path"]:
+                    record = dl["record"]
+                    break
+
+            if record:
+                db.update_download_status(
+                    record_id=record["id"],
+                    file_path=result["path"],
+                    file_size=result["size"],
+                    file_hash=result.get("hash", ""),
+                    status="completed",
+                )
+                manifest.mark_downloaded(
+                    source=record["source"],
+                    asset_id=record["game_id"],
+                    asset_type=record["asset_type"],
+                    file_path=result["path"],
+                    file_size=result["size"],
+                    file_hash=result.get("hash", ""),
+                    url=dl["url"],
+                )
+                success += 1
+        else:
+            failed += 1
+
+    # Print summary
+    print(f"\n{'='*50}")
+    print(f"Download Complete")
+    print(f"{'='*50}")
+    print(f"  ✅ Success: {success}")
+    print(f"  ❌ Failed:  {failed}")
+    manager.print_stats()
+    manifest.print_stats()
+
+    db.close()
+
+
+def cmd_storage(args):
+    """Show storage statistics."""
+    config = load_config()
+    dl_config = config.get("downloads", {})
+
+    storage = StorageConfig(
+        base_path=Path(dl_config.get("base_path", "data/assets")),
+        max_total_bytes=dl_config.get("max_total_gb", 50) * 1024**3,
+    )
+    manager = StorageManager(storage)
+    manifest = Manifest()
+
+    manager.print_stats()
+    manifest.print_stats()
+
+
+def cmd_verify(args):
+    """Verify downloaded file integrity."""
+    manifest = Manifest()
+    issues = manifest.verify_integrity()
+
+    if issues:
+        print(f"\n❌ Found {len(issues)} integrity issues:")
+        for issue in issues:
+            print(f"  - {issue['key']}: {issue['issue']}")
+            print(f"    Path: {issue.get('path', 'N/A')}")
+    else:
+        print("\n✅ All downloaded files verified OK")
+
+
+def _build_download_url(record: dict, dl_config: dict) -> str:
+    """Build download URL from record metadata."""
+    source = record.get("source", "")
+    asset_id = record.get("game_id", "")
+    asset_type = record.get("asset_type", "models")
+
+    if source == "polyhaven":
+        # Poly Haven CDN pattern: dl.polyhaven.org/file/ph-assets/{Type}/{subpath}
+        resolution = dl_config.get("max_resolution", "4k")
+
+        if asset_type == "hdris":
+            return f"https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/{resolution}/{asset_id}_{resolution}.hdr"
+        elif asset_type == "models":
+            fmt = dl_config.get("preferred_formats", {}).get("models", ["obj"])[0]
+            return f"https://dl.polyhaven.org/file/ph-assets/Models/{fmt}/{asset_id}_{fmt}.zip"
+        elif asset_type == "textures":
+            return f"https://dl.polyhaven.org/file/ph-assets/Textures/{resolution}/{asset_id}_{resolution}.zip"
+
+    return ""
+
+
+def _build_filename(asset_id: str, asset_type: str, dl_config: dict) -> str:
+    """Build standardized filename."""
+    if asset_type == "hdris":
+        return f"{asset_id}_{dl_config.get('max_resolution', '4k')}.hdr"
+    elif asset_type == "models":
+        fmt = dl_config.get("preferred_formats", {}).get("models", ["glb"])[0]
+        return f"{asset_id}_{fmt}.zip"
+    elif asset_type == "textures":
+        return f"{asset_id}_{dl_config.get('max_resolution', '4k')}.zip"
+    return f"{asset_id}.zip"
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="3D Spaces Dataset Scraper",
@@ -270,6 +473,21 @@ def main():
     # dashboard command
     subparsers.add_parser("dashboard", help="Show rich monitoring dashboard")
 
+    # download command
+    download_parser = subparsers.add_parser("download", help="Download 3D assets")
+    download_parser.add_argument("--source", type=str,
+                                 help="Only download from specific source")
+    download_parser.add_argument("--limit", type=int,
+                                 help="Limit number of downloads")
+    download_parser.add_argument("--yes", "-y", action="store_true",
+                                 help="Skip confirmation prompt")
+
+    # storage command
+    subparsers.add_parser("storage", help="Show storage statistics")
+
+    # verify command
+    subparsers.add_parser("verify", help="Verify downloaded file integrity")
+
     args = parser.parse_args()
 
     if args.command == "run":
@@ -288,6 +506,12 @@ def main():
         cmd_dedup(args)
     elif args.command == "dashboard":
         cmd_dashboard(args)
+    elif args.command == "download":
+        cmd_download(args)
+    elif args.command == "storage":
+        cmd_storage(args)
+    elif args.command == "verify":
+        cmd_verify(args)
     else:
         parser.print_help()
 

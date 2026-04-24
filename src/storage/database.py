@@ -112,6 +112,12 @@ MIGRATION_COLUMNS = [
     "version TEXT",
     "is_downloadable INTEGER",
     "engine_detected TEXT",
+    # Download pipeline columns
+    "local_file_path TEXT",
+    "local_file_size INTEGER",
+    "local_file_hash TEXT",
+    "download_status TEXT",
+    "downloaded_at TEXT",
 ]
 
 INSERT_COLUMNS = """
@@ -272,6 +278,62 @@ class Database:
             "SELECT source, COUNT(*) as c FROM records GROUP BY source"
         ).fetchall()
         return {r["source"]: r["c"] for r in rows}
+
+    def update_download_status(self, record_id: str, file_path: str,
+                                file_size: int, file_hash: str,
+                                status: str = "completed") -> None:
+        """Update download tracking columns for a record."""
+        from datetime import datetime, timezone
+
+        self.conn.execute(
+            """
+            UPDATE records SET
+                local_file_path = ?,
+                local_file_size = ?,
+                local_file_hash = ?,
+                download_status = ?,
+                downloaded_at = ?
+            WHERE id = ?
+            """,
+            (
+                file_path,
+                file_size,
+                file_hash,
+                status,
+                datetime.now(timezone.utc).isoformat(),
+                record_id,
+            ),
+        )
+        self.conn.commit()
+
+    def get_downloadable(self, source: str = None, limit: int = None) -> list[dict]:
+        """Get records that are downloadable but not yet downloaded."""
+        query = """
+            SELECT * FROM records
+            WHERE is_downloadable = 1
+            AND (download_status IS NULL OR download_status != 'completed')
+        """
+        params = []
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        query += " ORDER BY download_count DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        rows = self.conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_downloaded(self, source: str = None) -> int:
+        """Count records that have been downloaded."""
+        query = "SELECT COUNT(*) as c FROM records WHERE download_status = 'completed'"
+        params = []
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        row = self.conn.execute(query, params).fetchone()
+        return row["c"]
 
     def get_recent(self, limit: int = 10) -> list[dict]:
         """Get the most recently scraped records."""
